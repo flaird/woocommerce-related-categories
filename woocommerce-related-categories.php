@@ -6,7 +6,7 @@
 /*
 Plugin Name: WooCommerce Related Categories
 Plugin URI: https://github.com/sagaio/woocommerce-related-categories
-Description: Define related categories and display them under each product.
+Description: Define related categories and optionally display them under each product.
 Version: 1.0.0
 Author: SAGAIO
 Author URI: http://www.sagaio.com
@@ -27,9 +27,14 @@ class WooCommerce_Related_Categories {
     }
 
     private static function get_actions( $taxonomy ) {
-        $actions = array(
-            'set_related'        => __( 'Set related', 'woocommerce-related-categories' ),
-        );
+
+        $actions = [];
+
+        if ( is_taxonomy_hierarchical( $taxonomy ) ) {
+            $actions = array_merge( array(
+                'set_related'        => __( 'Set related', 'woocommerce-related-categories' ),
+            ), $actions);
+        }
 
         return $actions;
     }
@@ -54,7 +59,7 @@ class WooCommerce_Related_Categories {
         add_action( 'admin_footer', array( __CLASS__, 'inputs' ) );
 
         $action = false;
-        foreach ( array( 'action', 'action2' ) as $key ) {
+        foreach ( array( 'action' ) as $key ) {
             if ( $data[ $key ] && '-1' != $data[ $key ] ) {
                 $action = $data[ $key ];
             }
@@ -92,7 +97,7 @@ class WooCommerce_Related_Categories {
             $location = add_query_arg( 'post_type', $_REQUEST['post_type'], $location );
         }
 
-        wp_redirect( add_query_arg( 'message', $r ? 'tmt-updated' : 'tmt-error', $location ) );
+        wp_redirect( add_query_arg( 'message', $r ? 'sagaio-wrc-updated' : 'sagaio-wrc-error', $location ) );
         die;
     }
 
@@ -101,109 +106,43 @@ class WooCommerce_Related_Categories {
             return;
 
         switch ( $_GET['message'] ) {
-        case  'tmt-updated':
+        case  'sagaio-wrc-updated':
             echo '<div id="message" class="updated"><p>' . __( 'Terms updated.', 'woocommerce-related-categories' ) . '</p></div>';
             break;
 
-        case 'tmt-error':
+        case 'sagaio-wrc-error':
             echo '<div id="message" class="error"><p>' . __( 'Terms not updated.', 'woocommerce-related-categories' ) . '</p></div>';
             break;
         }
     }
 
-    static function handle_merge( $term_ids, $taxonomy ) {
-        $term_name = $_REQUEST['bulk_to_tag'];
-
-        if ( !$term = term_exists( $term_name, $taxonomy ) )
-            $term = wp_insert_term( $term_name, $taxonomy );
-
-        if ( is_wp_error( $term ) )
-            return false;
-
-        $to_term = $term['term_id'];
-
-        $to_term_obj = get_term( $to_term, $taxonomy );
-
-        foreach ( $term_ids as $term_id ) {
-            if ( $term_id == $to_term )
-                continue;
-
-            $old_term = get_term( $term_id, $taxonomy );
-
-            $ret = wp_delete_term( $term_id, $taxonomy, array( 'default' => $to_term, 'force_default' => true ) );
-            if ( is_wp_error( $ret ) ) {
-                continue;
-            }
-
-            do_action( 'term_management_tools_term_merged', $to_term_obj, $old_term );
-        }
-
-        return true;
-    }
-
     static function handle_set_related( $term_ids, $taxonomy ) {
-        $relate_to = $_REQUEST['relate_to'];
+
+        // Get the "source"
+        $source_term = $_REQUEST['source_term'];
+
+        // And make sure that it actually exist
+        if ( !taxonomy_exists( $source_term ) )
+            return false;
 
         foreach ( $term_ids as $term_id ) {
+
             // Don't relate the ID to itself, just continue looping
-            if ( $term_id == $relate_to )
+            if ( $term_id == $source_term )
                 continue;
 
-            $ret = wp_update_term( $term_id, $taxonomy, array( 'parent' => $parent_id ) );
+            // Create an array of all the terms that shall be related
+            $terms_related[] = array($term_id->term_taxonomy_id);
 
-            if ( is_wp_error( $ret ) )
-                return false;
         }
 
-        return true;
-    }
+        $query = wp_update_term( $source_term, $taxonomy, array( 'related_terms' => $terms_related ) );
 
-    static function handle_change_tax( $term_ids, $taxonomy ) {
-        global $wpdb;
-
-        $new_tax = $_POST['new_tax'];
-
-        if ( !taxonomy_exists( $new_tax ) )
+        if ( is_wp_error( $ret ) )
             return false;
 
-        if ( $new_tax == $taxonomy )
-            return false;
-
-        $tt_ids = array();
-        foreach ( $term_ids as $term_id ) {
-            $term = get_term( $term_id, $taxonomy );
-
-            if ( $term->parent && !in_array( $term->parent,$term_ids ) ) {
-                $wpdb->update( $wpdb->term_taxonomy,
-                    array( 'parent' => 0 ),
-                    array( 'term_taxonomy_id' => $term->term_taxonomy_id )
-                );
-            }
-
-            $tt_ids[] = $term->term_taxonomy_id;
-
-            if ( is_taxonomy_hierarchical( $taxonomy ) ) {
-                $child_terms = get_terms( $taxonomy, array(
-                    'child_of' => $term_id,
-                    'hide_empty' => false
-                ) );
-                $tt_ids = array_merge( $tt_ids, wp_list_pluck( $child_terms, 'term_taxonomy_id' ) );
-            }
-        }
-        $tt_ids = implode( ',', array_map( 'absint', $tt_ids ) );
-
-        $wpdb->query( $wpdb->prepare( "
-            UPDATE $wpdb->term_taxonomy SET taxonomy = %s WHERE term_taxonomy_id IN ($tt_ids)
-        ", $new_tax ) );
-
-        if ( is_taxonomy_hierarchical( $taxonomy ) && !is_taxonomy_hierarchical( $new_tax ) ) {
-            $wpdb->query( "UPDATE $wpdb->term_taxonomy SET parent = 0 WHERE term_taxonomy_id IN ($tt_ids)" );
-        }
-
-        clean_term_cache( $tt_ids, $taxonomy );
-        clean_term_cache( $tt_ids, $new_tax );
-
-        do_action( 'term_management_tools_term_changed_taxonomy', $tt_ids, $new_tax, $taxonomy );
+        // Clear the cache
+        clean_term_cache( $terms_related, $taxonomy );
 
         return true;
     }
@@ -213,7 +152,7 @@ class WooCommerce_Related_Categories {
 
         $dev_mode = defined( 'SCRIPT_DEBUG' ) && SCRIPT_DEBUG ? '.dev' : '';
 
-        wp_enqueue_script( 'woocommerce-related-categories', plugins_url( "script$dev_mode.js", __FILE__ ), array( 'jquery' ), '1.1' );
+        wp_enqueue_script( 'woocommerce-related-categories', plugins_url( "js/script$dev_mode.js", __FILE__ ), array( 'jquery' ), '1.1' );
 
         wp_localize_script( 'woocommerce-related-categories', 'sagaioWRC', self::get_actions( $taxonomy ) );
     }
@@ -228,32 +167,19 @@ class WooCommerce_Related_Categories {
         }
     }
 
-    static function input_set_parent( $taxonomy ) {
+    static function input_set_related( $taxonomy ) {
 
-        $wp_dropdown_categories_args = array(
+        wp_dropdown_categories( array(
           'hide_empty'        => 0,
-          'echo'              => false,
-          'selected'          => false,
           'hierarchical'      => true,
-          'name'              => "related",
-          'class'             => 'sagaio-wrc-multiselect',
+          'name'              => 'source_term',
+          'class'             => 'sagaio-wrc-select',
           'taxonomy'          => $taxonomy,
           'hide_if_empty'     => false,
-          'orderby'           => 'slug',
-      );
+          'orderby'           => 'name',
+          'show_option_none' => __( 'None', 'woocommerce-related-categories' )
+      ));
 
-      $dropdown = wp_dropdown_categories($wp_dropdown_categories_args);
-      $dropdown = str_replace('id=', 'multiple="multiple" id=', $dropdown);
-
-      if (is_array($taxonomy)) {
-          foreach ($taxonomy as $key => $post_term) {
-              $dropdown = str_replace(' value="' . $post_term . '"', ' value="' . $post_term . '" selected="selected"', $dropdown);
-          }
-      } else {
-          $dropdown = str_replace(' value="' . $taxonomy . '"', ' value="' . $taxonomy . '" selected="selected"', $dropdown);
-      }
-
-      return $dropdown;
 
     }
 }
